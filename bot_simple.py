@@ -1,15 +1,10 @@
 import os
 import logging
-import asyncio
 import sqlite3
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-import schedule
-import threading
-import time
-from datetime import datetime
-import random
+from flask import Flask, request
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -17,14 +12,18 @@ logger = logging.getLogger(__name__)
 
 # Получаем токен из переменных окружения
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+VERCEL_URL = os.getenv('VERCEL_URL', 'https://' + os.getenv('VERCEL_PROJECT_DOMAIN', '') + '.vercel.app')
+
+app = Flask(__name__)
 
 class SimpleRapidoBot:
     def __init__(self):
         self.init_database()
+        self.setup_bot()
         
     def init_database(self):
         """Инициализация простой базы данных"""
-        self.conn = sqlite3.connect('rapido.db', check_same_thread=False)
+        self.conn = sqlite3.connect('/tmp/rapido.db', check_same_thread=False)
         cursor = self.conn.cursor()
         
         cursor.execute('''
@@ -56,6 +55,9 @@ class SimpleRapidoBot:
     
     def add_sample_data(self):
         """Добавляем примерные данные для начала работы"""
+        import random
+        from datetime import datetime
+        
         sample_draws = [
             (166775, '23.11.2023 08:20', '1,3,5,7,9,11,13,15', 2),
             (166774, '23.11.2023 07:50', '2,4,6,8,10,12,14,16', 1),
@@ -134,6 +136,7 @@ class SimpleRapidoBot:
             await query.edit_message_text("🎯 *Генерирую умные прогнозы...*", parse_mode='Markdown')
             
             # Простой алгоритм прогнозирования
+            import random
             predictions = []
             for i in range(5):
                 # Берем "горячие" числа (1-8 часто выпадают в тестовых данных)
@@ -203,6 +206,9 @@ class SimpleRapidoBot:
         await query.answer()
         
         # Просто добавляем случайный тираж
+        import random
+        from datetime import datetime
+        
         new_draw_number = 166776 + random.randint(1, 10)
         numbers = ','.join(str(x) for x in random.sample(range(1, 21), 8))
         
@@ -238,7 +244,7 @@ class SimpleRapidoBot:
 *⚡ Технологии:*
 • Python + Telegram API
 • SQLite база данных  
-• Облачный хостинг Railway
+• Облачный хостинг Vercel
 
 *💚 Бесплатно навсегда!*
         """
@@ -267,41 +273,51 @@ class SimpleRapidoBot:
         elif data == "main_menu":
             await self.start(update, context)
     
-    def setup_handlers(self, application):
-        """Настройка обработчиков"""
-        application.add_handler(CommandHandler("start", self.start))
-        application.add_handler(CommandHandler("predict", self.get_predictions))
-        application.add_handler(CommandHandler("stats", self.show_stats))
-        application.add_handler(CommandHandler("about", self.about))
-        application.add_handler(CallbackQueryHandler(self.button_handler))
-    
-    def run(self):
-        """Запуск бота"""
+    def setup_bot(self):
+        """Настройка бота"""
         if not TELEGRAM_TOKEN:
             logger.error("❌ Токен не установлен!")
             return
         
-        # Создаем приложение
-        application = Application.builder().token(TELEGRAM_TOKEN).build()
+        self.application = Application.builder().token(TELEGRAM_TOKEN).build()
         
         # Настраиваем обработчики
-        self.setup_handlers(application)
+        self.application.add_handler(CommandHandler("start", self.start))
+        self.application.add_handler(CommandHandler("predict", self.get_predictions))
+        self.application.add_handler(CommandHandler("stats", self.show_stats))
+        self.application.add_handler(CommandHandler("about", self.about))
+        self.application.add_handler(CallbackQueryHandler(self.button_handler))
         
-        logger.info("🤖 Бесплатный бот запускается...")
-        print("=" * 50)
-        print("🤖 RAPIDO CLOUD BOT (БЕСПЛАТНЫЙ)")
-        print("=" * 50)
-        print("✅ База данных: SQLite")
-        print("✅ Хостинг: Railway (бесплатно)")
-        print("✅ Бот: Полностью бесплатный")
-        print("✅ Ссылка: t.me/your_bot_username")
-        print("🛑 Остановка: Через Railway панель")
-        print("=" * 50)
+        # Устанавливаем webhook
+        self.application.run_webhook(
+            listen="0.0.0.0",
+            port=3000,
+            url_path=TELEGRAM_TOKEN,
+            webhook_url=f"{VERCEL_URL}/{TELEGRAM_TOKEN}"
+        )
         
-        # Запускаем бота
-        application.run_polling()
+        logger.info("🤖 Бот запущен в режиме webhook")
 
-# Запускаем бота
-if __name__ == "__main__":
-    bot = SimpleRapidoBot()
-    bot.run()
+# Создаем экземпляр бота
+bot = SimpleRapidoBot()
+
+@app.route('/')
+def home():
+    return "🤖 Rapido Bot is running!"
+
+@app.route('/' + TELEGRAM_TOKEN, methods=['POST'])
+def telegram_webhook():
+    """Webhook для Telegram"""
+    update = Update.de_json(request.get_json(), bot.application.bot)
+    bot.application.process_update(update)
+    return 'OK'
+
+@app.route('/set_webhook')
+def set_webhook():
+    """Установка webhook"""
+    url = f"{VERCEL_URL}/{TELEGRAM_TOKEN}"
+    result = bot.application.bot.set_webhook(url)
+    return f"Webhook set: {result}"
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=3000)
